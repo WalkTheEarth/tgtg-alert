@@ -1,0 +1,35 @@
+# One container, one volume. `docker compose up -d` and you are done.
+#
+# Where to run this matters more than how. Too Good To Go sits behind DataDome,
+# which blocks datacenter IP ranges, so a cloud VPS is the most likely way to
+# end up with a tracker that looks healthy and silently never alerts. A home
+# connection -- a spare machine, a Raspberry Pi, a NAS -- is markedly more
+# reliable. See "Where to run it" in the README.
+
+services:
+  tgtg-alert:
+    build: ./server
+    image: tgtg-alert:latest
+    container_name: tgtg-alert
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      # Holds the SQLite database, which includes your TGTG session. Back it up
+      # somewhere private; do not commit it.
+      - ./data:/data
+    env_file:
+      - .env
+    environment:
+      TGTG_DATA_DIR: /data
+      # Poll interval in seconds. Slower is safer: TGTG's anti-bot measures
+      # respond to frequency, and a too-eager poller gets blocked outright.
+      TGTG_POLL_INTERVAL: "${TGTG_POLL_INTERVAL:-600}"
+    healthcheck:
+      # /health is intentionally unauthenticated so this works without the token.
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=5).status==200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s

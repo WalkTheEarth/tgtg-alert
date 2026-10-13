@@ -1,0 +1,36 @@
+[project]
+name = "tgtg-alert"
+version = "0.1.0"
+description = "Self-hosted Too Good To Go watcher that pushes alerts when specific bags appear"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+dependencies = [
+    # Deliberately from git, NOT PyPI. The last release (0.19.0, 2026-05-27)
+    # still points at `item/v8/`; the bump to `item/v9/` landed on master
+    # afterwards and is unreleased. V8 is expected to stop resolving, so the
+    # released package is a known-expiring dependency.
+    "tgtg @ git+https://github.com/ahivert/tgtg-python.git",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "requests>=2.31",
+    # Renders the pairing QR in the terminal. Pure Python, no build step.
+    "qrcode>=7.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "responses>=0.25", "httpx>=0.27"]
+
+[project.scripts]
+tgtg-alert = "tgtg_alert.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

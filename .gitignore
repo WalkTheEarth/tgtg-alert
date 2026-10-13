@@ -1,0 +1,39 @@
+# Secrets and runtime state -- never commit these.
+# The SQLite database holds a live Too Good To Go session (access token,
+# refresh token and DataDome cookie), and .env holds the API token.
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Node / Expo
+node_modules/
+.expo/
+dist/
+web-build/
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.orig.*
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Personal Claude Code permissions (the shared .claude/settings.json is fine to commit)
+.claude/settings.local.json
