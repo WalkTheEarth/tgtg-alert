@@ -472,3 +472,135 @@ class TgtgSource:
             return TgtgRateLimited(retry_after=delay)
 
         return exc
+
+
+# -- development ---------------------------------------------------------
+
+FIXTURE_TEMPLATE = {
+    "_comment": [
+        "Sample TGTG Alert fixture. Poll from this instead of the live API by",
+        "setting TGTG_DEV_MODE=1 and TGTG_DEV_FIXTURE to this file's path.",
+        "",
+        "To watch an alert fire: set items_available to 0, run one poll (the item",
+        "is recorded as sold out), then set it back to 3 and poll again. That is",
+        "the 0 -> >0 transition, and it should notify you.",
+        "",
+        "Deleting an item entirely is equivalent to setting it to 0, which is how",
+        "absence-as-sold-out is tested.",
+        "",
+        "Add a \"simulate\" block to test the failure paths, e.g.",
+        "  \"simulate\": {\"status\": 403}   -> acts blocked by DataDome",
+        "  \"simulate\": {\"status\": 429}   -> acts rate limited",
+    ],
+    "items": [
+        {
+            "item_id": "1001",
+            "display_name": "Magic Bag",
+            "item_category": "MEALS",
+            "items_available": 2,
+            "in_sales_window": True,
+            "price_including_taxes": {"code": "GBP", "minor_units": 399, "decimals": 2},
+            "pickup_interval": {"start": "2026-01-01T18:00:00Z", "end": "2026-01-01T19:00:00Z"},
+            "store": {"store_id": "s1", "store_name": "Blank Street Coffee", "distance": 450},
+        },
+        {
+            "item_id": "1002",
+            "display_name": "Bakery Box",
+            "item_category": "BAKERY",
+            "items_available": 0,
+            "price_including_taxes": {"code": "GBP", "minor_units": 300, "decimals": 2},
+            "store": {"store_id": "s2", "store_name": "Pret A Manger", "distance": 900},
+        },
+        {
+            "item_id": "1003",
+            "display_name": "Sushi Box",
+            "item_category": "SUSHI",
+            "items_available": 1,
+            "price_including_taxes": {"code": "GBP", "minor_units": 599, "decimals": 2},
+            "store": {"store_id": "s3", "store_name": "Itsu", "distance": 2400},
+        },
+    ],
+}
+
+
+class FixtureSource:
+    """Serves items from a local JSON file instead of the live API.
+
+    Exists because the alert path is otherwise close to untestable: the whole
+    mechanism is a 0 -> >0 transition, and you cannot make a real shop restock on
+    demand. With a fixture you flip a number, poll, and watch the real matcher,
+    the real database writes, and the real push fire.
+
+    The file is re-read on **every** fetch, so editing it between polls is the
+    intended way to drive a transition -- which also means a typo is reported at
+    poll time, not silently cached.
+    """
+
+    def __init__(self, path, block_backoff_seconds: float = 3600.0):
+        self.path = path
+        self.pacer = Pacer(0.0, block_backoff_seconds=block_backoff_seconds)
+        self.fetch_count = 0
+
+    def _load(self) -> tuple[list[dict], dict | None]:
+        try:
+            raw = self.path.read_text()
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"TGTG_DEV_FIXTURE points at {self.path}, which does not exist.\n"
+                "Generate one with `tgtg-alert dev fixture --write`."
+            ) from None
+
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{self.path} is not valid JSON: {exc}") from exc
+
+        if isinstance(payload, list):
+            return payload, None
+        if isinstance(payload, dict):
+            items = payload.get("items", [])
+            if not isinstance(items, list):
+                raise RuntimeError(f'{self.path}: "items" must be a list')
+            simulate = payload.get("simulate")
+            return items, simulate if isinstance(simulate, dict) else None
+        raise RuntimeError(f"{self.path}: expected a list of items or an object with an 'items' key")
+
+    def fetch_items(
+        self,
+        latitude: float,
+        longitude: float,
+        radius_km: int,
+        page_size: int = 20,
+        max_pages: int = 3,
+    ) -> list[Item]:
+        self.fetch_count += 1
+        raw_items, simulate = self._load()
+
+        if simulate:
+            status = simulate.get("status")
+            if status == FORBIDDEN_STATUS:
+                delay = self.pacer.note_blocked()
+                log.warning("[fixture] simulating HTTP 403 (DataDome); backing off %d min",
+                            round(delay / 60))
+                raise TgtgBlocked(retry_after=delay, detail="simulated 403")
+            if status == RATE_LIMIT_STATUS:
+                delay = self.pacer.note_rate_limited()
+                log.warning("[fixture] simulating HTTP 429; backing off %ds", round(delay))
+                raise TgtgRateLimited(retry_after=delay)
+            if status:
+                raise TgtgAPIError(int(status), b"simulated error")
+
+        items = normalize_page(raw_items)
+
+        # Apply the same radius bound the real path applies, so a fixture can
+        # test that distance filtering works.
+        limit_m = radius_km * 1000
+        items = [i for i in items if i.distance_m is None or i.distance_m <= limit_m]
+
+        log.info("[fixture] serving %d item(s) from %s (fetch #%d)",
+                 len(items), self.path.name, self.fetch_count)
+        return items
+
+    def capture_credentials(self) -> dict | None:
+        """Nothing to persist -- a fixture has no session."""
+        return None

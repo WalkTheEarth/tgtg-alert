@@ -31,11 +31,17 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from . import db
-from .config import BACKOFF_ON_BLOCK_SECONDS, Config
+from .config import (
+    BACKOFF_ON_BLOCK_SECONDS,
+    DEV_MIN_POLL_INTERVAL_SECONDS,
+    MIN_POLL_INTERVAL_SECONDS,
+    Config,
+)
 from .matcher import WatchRule, build_notification, decide, matches
 from .notify import ExpoNotifier, WebhookNotifier
 from .tgtg_source import (
     CredentialsMissing,
+    FixtureSource,
     Item,
     TgtgBlocked,
     TgtgRateLimited,
@@ -76,6 +82,21 @@ class Poller:
         self.config = config
         self.webhook_url = webhook_url
         self._stop = threading.Event()
+
+    def dev_banner(self) -> str:
+        """Loud on purpose: running dev mode against the live API by accident is
+        the one way this flag can get an account blocked."""
+        if self.config.dev_fixture:
+            return (
+                f"*** DEV MODE: polling the fixture at {self.config.dev_fixture}, "
+                f"NOT Too Good To Go. Interval floor is "
+                f"{DEV_MIN_POLL_INTERVAL_SECONDS}s. ***"
+            )
+        return (
+            "*** DEV MODE is on but TGTG_DEV_FIXTURE is not set. Polling the LIVE "
+            f"API at the production floor of {MIN_POLL_INTERVAL_SECONDS}s. "
+            "Set TGTG_DEV_FIXTURE to work offline. ***"
+        )
 
     # -- data access ------------------------------------------------------
 
@@ -281,10 +302,15 @@ class Poller:
     def run_once(self, dry_run: bool = False) -> PollStats:
         stats = PollStats()
 
-        credentials = self._load_credentials()
-        if not credentials:
-            log.error("no TGTG credentials stored -- run `tgtg-alert login` first")
-            raise CredentialsMissing("run `tgtg-alert login` first")
+        # A fixture replaces the live API entirely, so it needs no session.
+        use_fixture = bool(self.config.dev_mode and self.config.dev_fixture)
+
+        credentials = None
+        if not use_fixture:
+            credentials = self._load_credentials()
+            if not credentials:
+                log.error("no TGTG credentials stored -- run `tgtg-alert login` first")
+                raise CredentialsMissing("run `tgtg-alert login` first")
 
         watches = self._load_watches()
         stats.watches = len(watches)
@@ -294,13 +320,19 @@ class Poller:
                 self._record_run(stats, "no enabled watches")
             return stats
 
-        source = TgtgSource(
-            credentials,
-            language=self.config.default_language,
-            timeout=self.config.request_timeout,
-            user_agent=self.config.user_agent,
-            block_backoff_seconds=BACKOFF_ON_BLOCK_SECONDS,
-        )
+        if use_fixture:
+            source = FixtureSource(
+                self.config.dev_fixture,
+                block_backoff_seconds=BACKOFF_ON_BLOCK_SECONDS,
+            )
+        else:
+            source = TgtgSource(
+                credentials,
+                language=self.config.default_language,
+                timeout=self.config.request_timeout,
+                user_agent=self.config.user_agent,
+                block_backoff_seconds=BACKOFF_ON_BLOCK_SECONDS,
+            )
 
         # Group watches that can share one API call.
         buckets: dict[str, list[WatchRule]] = {}
@@ -348,8 +380,11 @@ class Poller:
                 self._apply(watch, items, source, stats, dry_run)
 
         if not dry_run:
-            # Harvest tokens the library may have rotated during the pass.
-            self._save_credentials(source.capture_credentials())
+            # Harvest tokens the library may have rotated during the pass. A
+            # fixture returns None -- there is no session to write back.
+            captured = source.capture_credentials()
+            if captured:
+                self._save_credentials(captured)
 
         if not dry_run:
             self._record_run(stats)
@@ -426,6 +461,8 @@ class Poller:
     # -- loop -------------------------------------------------------------
 
     def run_forever(self) -> None:
+        if self.config.dev_mode:
+            log.warning(self.dev_banner())
         log.info("poller started; interval %ds", self.config.poll_interval)
         while not self._stop.is_set():
             started = time.monotonic()

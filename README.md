@@ -9,6 +9,24 @@ The phone app is a thin client that pairs with your own instance.
 
 ---
 
+## Documentation
+
+Full guides live in [`docs/`](docs/README.md):
+
+| | |
+|---|---|
+| [The Too Good To Go problem](docs/the-tgtg-problem.md) | **Start here.** What the ToS says, the real risk, and when to walk away. |
+| [Getting started](docs/getting-started.md) | Install → first alert, end to end. |
+| [How it works](docs/how-it-works.md) | Why a server is required, and exactly when it alerts. |
+| [CLI reference](docs/cli.md) | Every command and flag. |
+| [Configuration](docs/configuration.md) | Every environment variable, and the trade-off each makes. |
+| [Mobile app](docs/mobile-app.md) | Using and building the app. |
+| [Deployment](docs/deployment.md) | Where to run it, Docker, systemd, TLS, backups. |
+| [Security](docs/security.md) | Secrets, threat model, rotation. |
+| [Troubleshooting](docs/troubleshooting.md) | Diagnosis playbook. Start here when alerts stop. |
+| [HTTP API](docs/api.md) | The REST API, for your own clients. |
+| [Development](docs/development.md) | Repo layout, tests, dev mode, extending. |
+
 ## ⚠️ Read this first
 
 **This uses an unofficial, undocumented API, and doing so is against Too Good
@@ -302,6 +320,31 @@ cd server
 The interesting logic — when to alert, how responses are normalised, how
 backoff escalates — is pure and fully tested without touching the network. See
 `tests/test_matcher.py`, `tests/test_normalize.py` and `tests/test_pacer.py`.
+
+### Testing without waiting for a real restock
+
+The alert rule is a 0 → >0 stock transition, so testing it against the live API
+means waiting for a shop to actually restock. Dev mode polls a local JSON file
+instead:
+
+```bash
+tgtg-alert dev fixture --write
+```
+
+```bash
+# .env
+TGTG_DEV_MODE=1
+TGTG_DEV_FIXTURE=/abs/path/dev-fixture.json
+TGTG_POLL_INTERVAL=20
+```
+
+Then set an item's `items_available` to `0`, wait a poll, set it back to `3`, and
+watch the alert fire through the real matcher, database, and push. The fixture
+can also simulate a 403 or 429 so you can exercise the backoff paths on demand.
+
+Full walkthrough: [Development](docs/development.md#dev-mode). Dev mode lowers the
+polling floor **only** when a fixture is set — pointed at the live API it keeps
+the production floor, since fast polling is what gets accounts blocked.
 
 ## License
 

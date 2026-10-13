@@ -29,6 +29,8 @@ def client(tmp_path):
         request_timeout=5.0,
         log_level="INFO",
         user_agent="TGTG/26.10.0 test",
+        dev_mode=False,
+        dev_fixture=None,
     )
     init_db(config.db_path)
     app = create_app(config)

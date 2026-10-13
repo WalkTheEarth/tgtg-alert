@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 from . import __version__, db
-from .config import Config
+from .config import Config, ConfigError
 
 log = logging.getLogger("tgtg_alert")
 
@@ -392,6 +392,8 @@ def cmd_poll(args: argparse.Namespace) -> int:
     from .tgtg_source import CredentialsMissing
 
     poller = Poller(config, webhook_url=os.environ.get("TGTG_WEBHOOK_URL"))
+    if config.dev_mode:
+        print(poller.dev_banner(), file=sys.stderr)
     try:
         stats = poller.run_once(dry_run=args.dry_run)
     except CredentialsMissing as exc:
@@ -439,6 +441,46 @@ def cmd_test_notify(args: argparse.Namespace) -> int:
         return 1
 
     return 0 if delivered else 1
+
+
+def cmd_dev_fixture(args: argparse.Namespace) -> int:
+    from .tgtg_source import FIXTURE_TEMPLATE
+
+    payload = json.dumps(FIXTURE_TEMPLATE, indent=2) + "\n"
+
+    if not args.write:
+        # Printing to stdout keeps it composable: `> fixture.json`, or pipe it
+        # somewhere else entirely.
+        print(payload, end="")
+        return 0
+
+    target = Path(args.path).expanduser().resolve()
+    if target.exists() and not args.force:
+        print(f"{target} already exists; use --force to overwrite.", file=sys.stderr)
+        return 1
+
+    target.write_text(payload)
+
+    # Point the fixture at the caller's own database, so this is copy-pasteable.
+    config = get_config()
+    print(f"Wrote {target}")
+    print()
+    print("Add these to .env:")
+    print()
+    print("  TGTG_DEV_MODE=1")
+    print(f"  TGTG_DEV_FIXTURE={target}")
+    print("  TGTG_POLL_INTERVAL=20")
+    print()
+    print("Then, with `tgtg-alert serve` running, edit the fixture and watch the")
+    print("alerts fire. To see one straight away:")
+    print()
+    print("  1. Set  \"items_available\": 0  on an item and wait for a poll.")
+    print("  2. Set it back to 3 and wait for the next poll -- that 0 -> >0")
+    print("     transition is what triggers a notification.")
+    print()
+    print(f"Logs are in {config.data_dir / 'tgtg_alert.db'} alongside any real data,")
+    print("so use a throwaway TGTG_DATA_DIR if you would rather keep them apart.")
+    return 0
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -551,6 +593,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="report what would alert, send nothing")
     p.set_defaults(func=cmd_poll)
 
+    dev = sub.add_parser("dev", help="development helpers").add_subparsers(
+        dest="dev_command", required=True
+    )
+    p = dev.add_parser(
+        "fixture", help="generate a fixture for testing offline (see docs/development.md)"
+    )
+    p.add_argument("--write", action="store_true", help="write the file instead of printing it")
+    p.add_argument(
+        "--path", default="./dev-fixture.json", help="where to write it (default ./dev-fixture.json)"
+    )
+    p.add_argument("--force", action="store_true", help="overwrite an existing file")
+    p.set_defaults(func=cmd_dev_fixture)
+
     p = sub.add_parser("test-notify", help="send a test push to paired devices")
     p.set_defaults(func=cmd_test_notify)
 
@@ -575,6 +630,16 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
         return 130
+    except ConfigError as exc:
+        # A bad .env is an ordinary mistake, not a crash. Report it as a
+        # sentence rather than a stack trace.
+        print(f"\nConfiguration error: {exc}", file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        # Raised by the fixture loader and the poller for operator-fixable
+        # problems (missing file, malformed JSON, no credentials).
+        print(f"\n{exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

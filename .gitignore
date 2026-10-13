@@ -37,3 +37,6 @@ web-build/
 
 # Personal Claude Code permissions (the shared .claude/settings.json is fine to commit)
 .claude/settings.local.json
+
+# Local dev fixtures -- personal scratch data, not part of the project
+dev-fixture.json
