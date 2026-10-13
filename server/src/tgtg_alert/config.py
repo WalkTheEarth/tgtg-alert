@@ -24,14 +24,15 @@ DEFAULT_POLL_INTERVAL_SECONDS = 600
 BACKOFF_ON_BLOCK_SECONDS = 3600
 BACKOFF_RECOVERY_POLLS = 6
 
-# A modern TGTG Android user agent. The library's built-in fallback is
-# "24.11.0", roughly a year stale, and because every consumer of that library
-# shares it, it is trivially fingerprintable -- which multiple maintainers
-# identify as the single most common cause of new 403s. Overridable, and worth
-# re-checking if alerts stop.
-DEFAULT_USER_AGENT = (
-    "TGTG/26.10.0 Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8 Pro Build/AP2A.240905.003)"
-)
+# A modern TGTG Android user agent, used only when the live version cannot be
+# determined. The library's built-in fallback is "24.11.0", roughly a year
+# stale, and because every consumer of that library shares it, it is trivially
+# fingerprintable -- which maintainers identify as the single most common cause
+# of new 403s.
+USER_AGENT_TEMPLATE = "TGTG/{} Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8 Pro Build/AP2A.240905.003)"
+
+# Kept in sync with the template above; bump if the fallback ever needs moving.
+DEFAULT_USER_AGENT = USER_AGENT_TEMPLATE.format("26.10.0")
 
 # TGTG's own app refreshes its access token every 4h; match that.
 ACCESS_TOKEN_LIFETIME_SECONDS = 3600 * 4
@@ -69,7 +70,11 @@ class Config:
     default_language: str
     request_timeout: float
     log_level: str
-    user_agent: str
+    # None means "not explicitly configured". That distinction matters: the
+    # DataDome cookie is bound to whichever User-Agent solved the challenge, so
+    # the same UA has to be used for login and for every later poll. An unset
+    # value lets login resolve the current version once and store it.
+    user_agent: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -97,7 +102,7 @@ class Config:
             default_language=os.environ.get("TGTG_LANGUAGE", "en-GB"),
             request_timeout=_env_float("TGTG_HTTP_TIMEOUT", 20.0),
             log_level=os.environ.get("TGTG_LOG_LEVEL", "INFO").upper(),
-            user_agent=os.environ.get("TGTG_USER_AGENT", "").strip() or DEFAULT_USER_AGENT,
+            user_agent=os.environ.get("TGTG_USER_AGENT", "").strip() or None,
         )
 
     def ensure_dirs(self) -> None:

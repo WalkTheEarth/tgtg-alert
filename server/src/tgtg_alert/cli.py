@@ -23,6 +23,26 @@ log = logging.getLogger("tgtg_alert")
 
 ENV_FILENAME = ".env"
 
+_DATADOME_HELP = """
+Too Good To Go refused the request. Its bot protection (DataDome) serves a
+CAPTCHA instead of a login when it dislikes the client, and this is by far the
+most common way setup fails.
+
+In order of how often each one is the cause:
+
+  1. A stale User-Agent. TGTG's Android version moves, and the client library's
+     built-in fallback is roughly a year behind. It is also shared by every
+     other user of that library, which makes it easy to fingerprint.
+     Check the version currently in the Play Store listing, then:
+         TGTG_USER_AGENT='TGTG/<version> Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8 Pro Build/AP2A.240905.003)' tgtg-alert login
+
+  2. A datacenter or VPN IP. DataDome blocks these as a matter of course, and
+     no amount of header tuning fixes it. Run this from a home connection.
+
+  3. Too many attempts in a short window. Wait an hour before retrying; repeated
+     failures make the reputation worse, not better.
+"""
+
 
 # -- helpers -------------------------------------------------------------
 
@@ -116,24 +136,40 @@ def cmd_login(args: argparse.Namespace) -> int:
     config = get_config()
     db.init_db(config.db_path)
 
-    # Imported here so `--help` and `init` stay instant.
+    # Imported here so `--help` and `init` stay instant: `tgtg_source` pulls in
+    # the vendor client, which is slow to import.
     from tgtg import TgtgClient
+
+    from .tgtg_source import discover_current_user_agent
 
     email = args.email or input("Too Good To Go account email: ").strip()
     if not email:
         print("An email is required.", file=sys.stderr)
         return 2
 
+    # Resolve the User-Agent once, here, and store it. Everything downstream
+    # reuses it, because DataDome binds the session cookie to the UA that solved
+    # its challenge -- a different UA on the next poll is a cookie replay.
+    if config.user_agent:
+        user_agent, live = config.user_agent, False
+        origin = "from TGTG_USER_AGENT"
+    else:
+        user_agent, live = discover_current_user_agent()
+        origin = "from the current Play Store release" if live else "fallback (could not reach Play Store)"
+
     print()
+    print(f"User-Agent: {user_agent}")
+    print(f"  ({origin})")
     print("Requesting a login code from Too Good To Go...")
     print("(Check your inbox -- TGTG will email a 6-digit PIN.)")
     print()
 
     try:
-        client = TgtgClient(email=email)
+        client = TgtgClient(email=email, user_agent=user_agent)
         credentials = client.get_credentials()
     except Exception as exc:  # noqa: BLE001 - surfaced to the operator verbatim
         print(f"\nLogin failed: {exc}", file=sys.stderr)
+        print(_DATADOME_HELP, file=sys.stderr)
         return 1
 
     refreshed = getattr(client, "last_time_token_refreshed", None)
@@ -152,7 +188,7 @@ def cmd_login(args: argparse.Namespace) -> int:
                 credentials["refresh_token"],
                 credentials["cookie"],
                 refreshed.isoformat() if refreshed else None,
-                getattr(client, "user_agent", None),
+                user_agent,
             ),
         )
 

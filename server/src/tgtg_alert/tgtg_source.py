@@ -33,9 +33,45 @@ from typing import Any
 from tgtg import TgtgClient
 from tgtg.exceptions import TgtgAPIError
 
-from .config import ACCESS_TOKEN_LIFETIME_SECONDS
+from .config import ACCESS_TOKEN_LIFETIME_SECONDS, DEFAULT_USER_AGENT, USER_AGENT_TEMPLATE
 
 log = logging.getLogger(__name__)
+
+
+def user_agent_for(
+    explicit: str | None = None,
+    stored: str | None = None,
+) -> str:
+    """Pick the User-Agent to present, in strict precedence order.
+
+    `explicit` (the TGTG_USER_AGENT env var) always wins -- someone who sets it
+    means it. Otherwise the value captured at login is reused, because the
+    DataDome cookie is bound to it and presenting a different one later reads as
+    a cookie replay and gets a 403. The pinned default is the last resort.
+
+    Getting this precedence wrong is subtle and expensive: login under one UA
+    and poll under another, and everything looks configured correctly while
+    every request is refused.
+    """
+    return explicit or stored or DEFAULT_USER_AGENT
+
+
+def discover_current_user_agent() -> tuple[str, bool]:
+    """Build a User-Agent from TGTG's current Play Store version.
+
+    Returns (user_agent, resolved_live). The scrape parses a Play Store payload
+    whose shape Google changes without notice, so failure is expected sometimes
+    and falls back to the pinned default rather than blocking login.
+    """
+    try:
+        from tgtg import get_last_apk_version
+
+        version = get_last_apk_version()
+        if version and str(version).strip():
+            return USER_AGENT_TEMPLATE.format(str(version).strip()), True
+    except Exception as exc:  # noqa: BLE001 - best effort by design
+        log.debug("could not determine the current TGTG version: %s", exc)
+    return DEFAULT_USER_AGENT, False
 
 # HTTP 429 is TGTG's documented-nowhere rate-limit signal. 403 is what DataDome
 # bot protection returns when it decides we look like a script.
@@ -333,12 +369,11 @@ class TgtgSource:
             timeout=self.timeout,
             last_time_token_refreshed=parsed,
             access_token_lifetime=ACCESS_TOKEN_LIFETIME_SECONDS,
-            # Pin a modern user agent instead of letting the library scrape
-            # Google Play on every construction. That scrape is slow, noisy on
-            # stdout, and fails closed to a hardcoded version that is now about
-            # a year stale -- and a stale UA is the most commonly reported cause
-            # of new 403s.
-            user_agent=self.user_agent or creds.get("user_agent"),
+            # Never let the library pick its own: it scrapes Google Play on
+            # every construction (slow, noisy on stdout) and falls back to a
+            # version about a year stale. Worse, that pick would be its own,
+            # breaking the match with the UA the DataDome cookie was issued to.
+            user_agent=user_agent_for(self.user_agent, creds.get("user_agent")),
         )
 
     @property

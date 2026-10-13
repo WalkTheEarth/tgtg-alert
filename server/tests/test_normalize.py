@@ -6,7 +6,8 @@ pin the shapes we accept. Both the nested (`store.store_name`) and flat
 given TGTG version returns.
 """
 
-from tgtg_alert.tgtg_source import normalize_item, normalize_page
+from tgtg_alert.config import DEFAULT_USER_AGENT
+from tgtg_alert.tgtg_source import normalize_item, normalize_page, user_agent_for
 
 
 NESTED = {
@@ -97,3 +98,30 @@ def test_price_object_without_minor_units_falls_back_to_amount():
     )
     assert item is not None
     assert item.price_minor == 350
+
+
+# -- user agent resolution ----------------------------------------------
+#
+# DataDome binds its cookie to the User-Agent that solved the challenge, so the
+# same UA must be presented at login and on every later poll. Presenting a
+# different one reads as a cookie replay and earns a 403 -- while everything
+# still looks correctly configured.
+
+
+def test_explicit_user_agent_always_wins():
+    assert user_agent_for("EXPLICIT", "stored") == "EXPLICIT"
+
+
+def test_stored_user_agent_beats_the_default():
+    """The UA captured at login is the one the cookie belongs to."""
+    assert user_agent_for(None, "TGTG/99.0.0 stored") == "TGTG/99.0.0 stored"
+
+
+def test_default_is_the_last_resort():
+    assert user_agent_for(None, None) == DEFAULT_USER_AGENT
+
+
+def test_empty_strings_do_not_win():
+    """An empty env var must not shadow a real stored value."""
+    assert user_agent_for("", "stored") == "stored"
+    assert user_agent_for("", "") == DEFAULT_USER_AGENT
